@@ -16,27 +16,41 @@
 
 package org.chromium.latency.walt;
 
+import android.content.BroadcastReceiver;
+import android.content.Context;
 import android.content.Intent;
+import android.content.IntentFilter;
 import android.support.v4.content.LocalBroadcastManager;
 import android.util.Log;
 
 /**
- * A very simple mLogger that keeps its data in a StringBuilder. We need on screen log because the
+ * A very simple logger that keeps its data in a StringBuilder. We need on screen log because the
  * USB port is often taken and we don't have easy access to adb log.
  */
 public class SimpleLogger {
-    public final String LOG_INTENT = "log-message";
-    public static final String TAG = "WALTlogger";
+    private static final String LOG_INTENT = "log-message";
+    public static final String TAG = "WaltLogger";
 
+    private static final Object LOCK = new Object();
+    private static SimpleLogger instance;
 
-    public StringBuilder sb = new StringBuilder();
-    public LocalBroadcastManager broadcastManager;
+    private StringBuilder sb = new StringBuilder();
+    private LocalBroadcastManager broadcastManager;
 
-    public void setBroadcastManager(LocalBroadcastManager bm) {
-        broadcastManager = bm;
+    public static SimpleLogger getInstance(Context context) {
+        synchronized (LOCK) {
+            if (instance == null) {
+                instance = new SimpleLogger(context.getApplicationContext());
+            }
+            return instance;
+        }
     }
 
-    public void log(String msg) {
+    private SimpleLogger(Context context) {
+        broadcastManager = LocalBroadcastManager.getInstance(context);
+    }
+
+    public synchronized void log(String msg) {
         Log.i(TAG, msg);
         sb.append(msg);
         sb.append('\n');
@@ -45,6 +59,14 @@ public class SimpleLogger {
             intent.putExtra("message", msg);
             broadcastManager.sendBroadcast(intent);
         }
+    }
+
+    public void registerReceiver(BroadcastReceiver broadcastReceiver) {
+        broadcastManager.registerReceiver(broadcastReceiver, new IntentFilter(LOG_INTENT));
+    }
+
+    public void unregisterReceiver(BroadcastReceiver broadcastReceiver) {
+        broadcastManager.unregisterReceiver(broadcastReceiver);
     }
 
     public String getLogText() {

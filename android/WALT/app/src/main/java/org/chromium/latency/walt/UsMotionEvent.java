@@ -45,7 +45,7 @@ public class UsMotionEvent {
      * @param baseTime - base time of the last clock sync.
      */
     public UsMotionEvent(MotionEvent event, long baseTime) {
-        createTime = ClockManager.microTime() - baseTime;
+        createTime = RemoteClockInfo.microTime() - baseTime;
         this.baseTime = baseTime;
         slot = -1;
         kernelTime = getEventTimeMicro(event) - baseTime;
@@ -55,7 +55,7 @@ public class UsMotionEvent {
     }
 
     public UsMotionEvent(MotionEvent event, long baseTime, int pos) {
-        createTime = ClockManager.microTime() - baseTime;
+        createTime = RemoteClockInfo.microTime() - baseTime;
         this.baseTime = baseTime;
         slot = pos;
         action = MotionEvent.ACTION_MOVE; // Only MOVE events get bundled with history
@@ -77,12 +77,12 @@ public class UsMotionEvent {
     }
 
     public String toStringLong() {
-        return String.format("Event: %d %.1f %.1f slot=%d, num=%d %s",
+        return String.format("Event: t=%d x=%.1f y=%.1f slot=%d num=%d %s",
                 kernelTime, x, y, slot, num, actionToString(action));
 
     }
 
-    // The MotionEvent.actionToString is not present befoe API 19
+    // The MotionEvent.actionToString is not present before API 19
     public static String actionToString(int action) {
         switch (action) {
             case MotionEvent.ACTION_DOWN:

@@ -19,38 +19,46 @@ package org.chromium.latency.walt;
 import android.content.BroadcastReceiver;
 import android.content.Context;
 import android.content.Intent;
-import android.content.IntentFilter;
+import android.graphics.Color;
 import android.os.Bundle;
 import android.support.v4.app.Fragment;
+import android.text.method.ScrollingMovementMethod;
 import android.view.LayoutInflater;
 import android.view.MotionEvent;
 import android.view.View;
 import android.view.ViewGroup;
-import android.widget.ImageButton;
 import android.widget.TextView;
 
+import com.github.mikephil.charting.charts.ScatterChart;
+import com.github.mikephil.charting.components.Description;
+import com.github.mikephil.charting.data.Entry;
+import com.github.mikephil.charting.data.ScatterData;
+import com.github.mikephil.charting.data.ScatterDataSet;
+
+import java.io.IOException;
 import java.util.ArrayList;
+import java.util.Locale;
 
-public class DragLatencyFragment extends Fragment
-    implements View.OnClickListener {
+public class DragLatencyFragment extends Fragment implements View.OnClickListener {
 
-    SimpleLogger logger;
-
-    TextView mLogTextView;
-    MainActivity activity;
-    TextView mTouchCatcher;
+    private SimpleLogger logger;
+    private WaltDevice waltDevice;
+    private TextView logTextView;
+    private TouchCatcherView touchCatcher;
+    private TextView crossCountsView;
+    private TextView dragCountsView;
+    private View startButton;
+    private View restartButton;
+    private View finishButton;
+    private ScatterChart latencyChart;
+    private View latencyChartLayout;
     int moveCount = 0;
-    int allDownConunt = 0;
-    int allUpConunt = 0;
-    int okDownCount = 0;
-    int okUpCount = 0;
-
 
     ArrayList<UsMotionEvent> touchEventList = new ArrayList<>();
-    ArrayList<ClockManager.TriggerMessage> laserEventList = new ArrayList<>();
+    ArrayList<WaltDevice.TriggerMessage> laserEventList = new ArrayList<>();
 
 
-    private BroadcastReceiver mLogReceiver = new BroadcastReceiver() {
+    private BroadcastReceiver logReceiver = new BroadcastReceiver() {
         @Override
         public void onReceive(Context context, Intent intent) {
             String msg = intent.getStringExtra("message");
@@ -58,18 +66,15 @@ public class DragLatencyFragment extends Fragment
         }
     };
 
-    private View.OnTouchListener mTouchListener = new View.OnTouchListener() {
+    private View.OnTouchListener touchListener = new View.OnTouchListener() {
         @Override
         public boolean onTouch(View v, MotionEvent event) {
-
-            int action = event.getAction();
-
             int histLen = event.getHistorySize();
             for (int i = 0; i < histLen; i++){
-                UsMotionEvent eh = new UsMotionEvent(event, activity.clockManager.baseTime, i);
+                UsMotionEvent eh = new UsMotionEvent(event, waltDevice.clock.baseTime, i);
                 touchEventList.add(eh);
             }
-            UsMotionEvent e = new UsMotionEvent(event, activity.clockManager.baseTime);
+            UsMotionEvent e = new UsMotionEvent(event, waltDevice.clock.baseTime);
             touchEventList.add(e);
             moveCount += histLen + 1;
 
@@ -82,15 +87,27 @@ public class DragLatencyFragment extends Fragment
         // Required empty public constructor
     }
 
-
     @Override
     public View onCreateView(LayoutInflater inflater, ViewGroup container,
                              Bundle savedInstanceState) {
-        // Inflate the layout for this fragment
-        activity = (MainActivity) getActivity();
-        View view =  inflater.inflate(R.layout.fragment_drag_latency, container, false);
-        logger = activity.logger;
+        logger = SimpleLogger.getInstance(getContext());
+        waltDevice = WaltDevice.getInstance(getContext());
 
+        // Inflate the layout for this fragment
+        final View view = inflater.inflate(R.layout.fragment_drag_latency, container, false);
+        logTextView = (TextView) view.findViewById(R.id.txt_log_drag_latency);
+        startButton = view.findViewById(R.id.button_start_drag);
+        restartButton = view.findViewById(R.id.button_restart_drag);
+        finishButton = view.findViewById(R.id.button_finish_drag);
+        touchCatcher = (TouchCatcherView) view.findViewById(R.id.tap_catcher);
+        crossCountsView = (TextView) view.findViewById(R.id.txt_cross_counts);
+        dragCountsView = (TextView) view.findViewById(R.id.txt_drag_counts);
+        latencyChart = (ScatterChart) view.findViewById(R.id.latency_chart);
+        latencyChartLayout = view.findViewById(R.id.latency_chart_layout);
+        logTextView.setMovementMethod(new ScrollingMovementMethod());
+        view.findViewById(R.id.button_close_chart).setOnClickListener(this);
+        restartButton.setEnabled(false);
+        finishButton.setEnabled(false);
         return view;
     }
 
@@ -98,76 +115,89 @@ public class DragLatencyFragment extends Fragment
     public void onResume() {
         super.onResume();
 
-        mLogTextView = (TextView) activity.findViewById(R.id.txt_log_drag_latency);
-        mLogTextView.setText(activity.logger.getLogText());
-        activity.logger.broadcastManager.registerReceiver(mLogReceiver,
-                new IntentFilter(activity.logger.LOG_INTENT));
+        logTextView.setText(logger.getLogText());
+        logger.registerReceiver(logReceiver);
 
-        // Register this fregment class as the listener for some button clicks
-        ((ImageButton)activity.findViewById(R.id.button_restart_drag)).setOnClickListener(this);
-        ((ImageButton)activity.findViewById(R.id.button_start_drag)).setOnClickListener(this);
-        ((ImageButton)activity.findViewById(R.id.button_finish_drag)).setOnClickListener(this);
-
-        mTouchCatcher = (TextView) activity.findViewById(R.id.tap_catcher);
+        // Register this fragment class as the listener for some button clicks
+        startButton.setOnClickListener(this);
+        restartButton.setOnClickListener(this);
+        finishButton.setOnClickListener(this);
     }
 
     @Override
     public void onPause() {
-        activity.logger.broadcastManager.unregisterReceiver(mLogReceiver);
+        logger.unregisterReceiver(logReceiver);
         super.onPause();
     }
 
     public void appendLogText(String msg) {
-        mLogTextView.append(msg + "\n");
+        logTextView.append(msg + "\n");
     }
-
 
     void updateCountsDisplay() {
-        TextView tv = (TextView) activity.findViewById(R.id.txt_cross_counts);
-        tv.setText(String.format("⤯ %d", laserEventList.size()));
-
-        TextView tvMove = (TextView) activity.findViewById(R.id.txt_drag_counts);
-        tvMove.setText(String.format("⇄ %d", moveCount));
+        crossCountsView.setText(String.format(Locale.US, "↕ %d", laserEventList.size()));
+        dragCountsView.setText(String.format(Locale.US, "⇄ %d", moveCount));
     }
 
-
-    void startMeasurement() {
+    /**
+     * @return true if measurement was successfully started
+     */
+    boolean startMeasurement() {
         logger.log("Starting drag latency test");
-        activity.clockManager.syncClock();
-        mTouchCatcher.setOnTouchListener(mTouchListener);
-        activity.clockManager.sendReceive(ClockManager.CMD_AUTO_LASER_ON);
-        // Register a callback for broadcasts
-        activity.broadcastManager.registerReceiver(
-                onIncomingTimestamp,
-                new IntentFilter(activity.clockManager.INCOMING_DATA_INTENT)
-        );
-        activity.clockManager.startUsbListener();
+        try {
+            waltDevice.syncClock();
+        } catch (IOException e) {
+            logger.log("Error syncing clocks: " + e.getMessage());
+            return false;
+        }
+        // Register a callback for triggers
+        waltDevice.setTriggerHandler(triggerHandler);
+        try {
+            waltDevice.command(WaltDevice.CMD_AUTO_LASER_ON);
+            waltDevice.startListener();
+        } catch (IOException e) {
+            logger.log("Error: " + e.getMessage());
+            waltDevice.clearTriggerHandler();
+            return false;
+        }
+        touchCatcher.setOnTouchListener(touchListener);
+        touchCatcher.startAnimation();
+        touchEventList.clear();
+        laserEventList.clear();
+        moveCount = 0;
+        updateCountsDisplay();
+        return true;
     }
-
 
     void restartMeasurement() {
-        activity.logger.log("\n## Restarting tap latency  measurement. Re-sync clocks ...");
-        activity.clockManager.syncClock();
+        logger.log("\n## Restarting drag latency test. Re-sync clocks ...");
+        try {
+            waltDevice.syncClock();
+        } catch (IOException e) {
+            logger.log("Error syncing clocks: " + e.getMessage());
+        }
 
+        touchCatcher.startAnimation();
         touchEventList.clear();
-
+        laserEventList.clear();
         moveCount = 0;
-        allDownConunt = 0;
-        allUpConunt = 0;
-        okDownCount = 0;
-        okUpCount = 0;
-
         updateCountsDisplay();
     }
 
-
     void finishAndShowStats() {
-        activity.clockManager.stopUsbListener();
-        activity.clockManager.sendReceive(ClockManager.CMD_AUTO_LASER_OFF);
-        mTouchCatcher.setOnTouchListener(null);
-        activity.broadcastManager.unregisterReceiver(onIncomingTimestamp);
+        touchCatcher.stopAnimation();
+        waltDevice.stopListener();
+        try {
+            waltDevice.command(WaltDevice.CMD_AUTO_LASER_OFF);
+        } catch (IOException e) {
+            logger.log("Error: " + e.getMessage());
+        }
+        touchCatcher.setOnTouchListener(null);
+        waltDevice.clearTriggerHandler();
 
-        logger.log(String.format(
+        waltDevice.checkDrift();
+
+        logger.log(String.format(Locale.US,
                 "Recorded %d laser events and %d touch events. ",
                 laserEventList.size(),
                 touchEventList.size()
@@ -186,6 +216,7 @@ public class DragLatencyFragment extends Fragment
         // TODO: Log raw data if enabled in settings, touch events add lots of text to the log.
         // logRawData();
         reshapeAndCalculate();
+        LogUploader.uploadIfAutoEnabled(getContext());
     }
 
     // Data formatted for processing with python script, y.py
@@ -198,7 +229,7 @@ public class DragLatencyFragment extends Fragment
 
         logger.log("=====> TOUCH EVENTS =====");
         for (UsMotionEvent e: touchEventList) {
-            logger.log(String.format(
+            logger.log(String.format(Locale.US,
                     "%d %.3f %.3f",
                     e.kernelTime,
                     e.x, e.y
@@ -206,7 +237,6 @@ public class DragLatencyFragment extends Fragment
         }
         logger.log("=====< END OF TOUCH EVENTS =====");
     }
-
 
     void reshapeAndCalculate() {
         double[] ft, lt; // All time arrays are in _milliseconds_
@@ -238,6 +268,12 @@ public class DragLatencyFragment extends Fragment
             laserEventList.remove(0);
         }
 
+        // Calculation assumes that the first event is generated by the finger obstructing the beam.
+        // Remove the first event if it was generated by finger going out of the beam (value==1).
+        while (laserEventList.size() > 0 && laserEventList.get(0).value == 1) {
+            laserEventList.remove(0);
+        }
+
         int lN = laserEventList.size();
 
         if (lN < 8) {
@@ -257,45 +293,50 @@ public class DragLatencyFragment extends Fragment
         calculateDragLatency(ft,fy, lt, ldir);
     }
 
-
     /**
      * Handler for all the button clicks on this screen.
      */
     @Override
     public void onClick(View v) {
         if (v.getId() == R.id.button_restart_drag) {
+            latencyChartLayout.setVisibility(View.GONE);
+            restartButton.setEnabled(false);
             restartMeasurement();
+            restartButton.setEnabled(true);
             return;
         }
 
         if (v.getId() == R.id.button_start_drag) {
-
-            startMeasurement();
+            latencyChartLayout.setVisibility(View.GONE);
+            startButton.setEnabled(false);
+            boolean startSuccess = startMeasurement();
+            if (startSuccess) {
+                finishButton.setEnabled(true);
+                restartButton.setEnabled(true);
+            } else {
+                startButton.setEnabled(true);
+            }
             return;
         }
 
         if (v.getId() == R.id.button_finish_drag) {
-
+            finishButton.setEnabled(false);
+            restartButton.setEnabled(false);
             finishAndShowStats();
+            startButton.setEnabled(true);
             return;
         }
 
+        if (v.getId() == R.id.button_close_chart) {
+            latencyChartLayout.setVisibility(View.GONE);
+        }
     }
 
-
-    private BroadcastReceiver onIncomingTimestamp = new BroadcastReceiver() {
+    private WaltDevice.TriggerHandler triggerHandler = new WaltDevice.TriggerHandler() {
         @Override
-        public void onReceive(Context context, Intent intent) {
-
-            String msg = intent.getStringExtra("message");
-            logger.log("Incoming timestamp received: " + msg.trim());
-
-
-            ClockManager.TriggerMessage tmsg = activity.clockManager.parseTriggerMessage(msg);
-
+        public void onReceive(WaltDevice.TriggerMessage tmsg) {
             laserEventList.add(tmsg);
             updateCountsDisplay();
-
         }
     };
 
@@ -330,12 +371,45 @@ public class DragLatencyFragment extends Fragment
             double[] lts = Utils.extract(sideIdx, side, lt);
             // TODO: time this call
             double bestShift = Utils.findBestShift(lts, ft, fy);
-            logger.log("bestShift = " + bestShift);
+            logger.log(String.format(Locale.US, "bestShift = %.2f", bestShift));
             averageBestShift += bestShift / 2;
         }
 
-        logger.log(String.format("Drag latency is %.1f [ms]", averageBestShift));
+        drawLatencyGraph(ft, fy, lt, averageBestShift);
+        logger.log(String.format(Locale.US, "Drag latency is %.1f [ms]", averageBestShift));
     }
 
+    private void drawLatencyGraph(double[] ft, double[] fy, double[] lt, double averageBestShift) {
+        final ArrayList<Entry> touchEntries = new ArrayList<>();
+        final ArrayList<Entry> laserEntries = new ArrayList<>();
+        final double[] laserT = new double[lt.length];
+        for (int i = 0; i < ft.length; i++) {
+            touchEntries.add(new Entry((float) ft[i], (float) fy[i]));
+        }
+        for (int i = 0; i < lt.length; i++) {
+            laserT[i] = lt[i] + averageBestShift;
+        }
+        final double[] laserY = Utils.interp(laserT, ft, fy);
+        for (int i = 0; i < laserY.length; i++) {
+            laserEntries.add(new Entry((float) laserT[i], (float) laserY[i]));
+        }
 
+        final ScatterDataSet dataSetTouch = new ScatterDataSet(touchEntries, "Touch Events");
+        dataSetTouch.setScatterShape(ScatterChart.ScatterShape.CIRCLE);
+        dataSetTouch.setScatterShapeSize(8f);
+
+        final ScatterDataSet dataSetLaser = new ScatterDataSet(laserEntries,
+                String.format(Locale.US, "Laser Events  Latency=%.1f ms", averageBestShift));
+        dataSetLaser.setColor(Color.RED);
+        dataSetLaser.setScatterShapeSize(10f);
+        dataSetLaser.setScatterShape(ScatterChart.ScatterShape.X);
+
+        final ScatterData scatterData = new ScatterData(dataSetTouch, dataSetLaser);
+        final Description desc = new Description();
+        desc.setText("Y-Position [pixels] vs. Time [ms]");
+        desc.setTextSize(12f);
+        latencyChart.setDescription(desc);
+        latencyChart.setData(scatterData);
+        latencyChartLayout.setVisibility(View.VISIBLE);
+    }
 }

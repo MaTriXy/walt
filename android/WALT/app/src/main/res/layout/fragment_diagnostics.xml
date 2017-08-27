@@ -36,6 +36,7 @@
                         android:text="Reconnect" />
 
                     <TextView
+                        android:visibility="gone"
                         style="@style/MenuTextBottom"
                         android:text="TBD: Conn status" />
 
@@ -95,11 +96,6 @@
                         style="@style/MenuTextTop"
                         android:text="Re-sync clocks" />
 
-                    <TextView
-                        style="@style/MenuTextBottom"
-                        android:text="..." />
-
-
                 </LinearLayout>
             </LinearLayout>
             <!-- End of ReSync -->
@@ -136,14 +132,14 @@
 
             <View style="@style/MenuDivider" />
 
-            <!-- Start/stop listener -->
+            <!-- Program -->
             <LinearLayout
                 style="@style/MenuItemStyle"
-                android:onClick="onClickStartListener">
+                android:onClick="onClickProgram">
 
                 <ImageView
                     style="@style/MenuIconStyle"
-                    android:src="@drawable/ic_swap_horiz_black_24dp" />
+                    android:src="@drawable/ic_system_update_alt_black_24dp" />
 
                 <LinearLayout
                     android:layout_width="match_parent"
@@ -153,18 +149,18 @@
 
                     <TextView
                         style="@style/MenuTextTop"
-                        android:text="Start/stop listener" />
+                        android:text="Update WALT Firmware" />
 
                     <TextView
                         style="@style/MenuTextBottom"
-                        android:text="..." />
+                        android:text="Please press the button on the Teensy first" />
 
 
                 </LinearLayout>
             </LinearLayout>
-            <!-- End of Start/stop listener -->
+            <!-- Program -->
 
-            <View style="@style/MenuDivider" />
+            <!--<View style="@style/MenuDivider" />-->
 
             <!-- Send T TODO: replace with send any char, it says nothing on the log, broadcast? -->
             <!--
@@ -195,9 +191,6 @@
             </LinearLayout>
             -->
             <!-- End of Send T -->
-
-
-            <View style="@style/MenuDivider" />
         </LinearLayout>
     </ScrollView>
 

@@ -16,38 +16,61 @@
 
 package org.chromium.latency.walt;
 
+import android.Manifest;
+import android.content.DialogInterface;
 import android.content.Intent;
+import android.content.SharedPreferences;
+import android.content.pm.PackageManager;
+import android.hardware.usb.UsbDevice;
+import android.hardware.usb.UsbManager;
+import android.media.AudioManager;
 import android.net.Uri;
 import android.os.Build;
 import android.os.Bundle;
 import android.os.Environment;
 import android.os.Handler;
+import android.os.StrictMode;
+import android.preference.PreferenceManager;
+import android.support.annotation.NonNull;
+import android.support.v4.app.ActivityCompat;
 import android.support.v4.app.Fragment;
+import android.support.v4.app.FragmentManager;
 import android.support.v4.app.FragmentTransaction;
+import android.support.v4.content.ContextCompat;
+import android.support.v4.content.Loader;
 import android.support.v4.content.LocalBroadcastManager;
+import android.support.v7.app.AlertDialog;
 import android.support.v7.app.AppCompatActivity;
 import android.support.v7.widget.Toolbar;
 import android.util.Log;
 import android.view.Menu;
 import android.view.MenuItem;
 import android.view.View;
+import android.widget.EditText;
 import android.widget.Toast;
+
+import org.chromium.latency.walt.programmer.Programmer;
 
 import java.io.File;
 import java.io.FileOutputStream;
+import java.io.IOException;
 import java.io.PrintWriter;
 import java.io.StringWriter;
 import java.util.Date;
+import java.util.Locale;
 
+import static org.chromium.latency.walt.Utils.getBooleanPreference;
 
 public class MainActivity extends AppCompatActivity {
     private static final String TAG = "WALT";
+    private static final int PERMISSION_REQUEST_WRITE_EXTERNAL_STORAGE_SHARE_LOG = 2;
+    private static final int PERMISSION_REQUEST_WRITE_EXTERNAL_STORAGE_SYSTRACE = 3;
 
     private Toolbar toolbar;
     LocalBroadcastManager broadcastManager;
-    public SimpleLogger logger = new SimpleLogger();
-    public ClockManager clockManager;
-    public Menu mMenu;
+    private SimpleLogger logger;
+    private WaltDevice waltDevice;
+    public Menu menu;
 
     public Handler handler = new Handler();
 
@@ -78,6 +101,46 @@ public class MainActivity extends AppCompatActivity {
     }
 
     @Override
+    protected void onResume() {
+        super.onResume();
+
+        final UsbDevice usbDevice;
+        Intent intent = getIntent();
+        if (intent != null && intent.getAction().equals(UsbManager.ACTION_USB_DEVICE_ATTACHED)) {
+            setIntent(null); // done with the intent
+            usbDevice = intent.getParcelableExtra(UsbManager.EXTRA_DEVICE);
+        } else {
+            usbDevice = null;
+        }
+
+        // Connect and sync clocks, but a bit later as it takes time
+        handler.postDelayed(new Runnable() {
+            @Override
+            public void run() {
+                if (usbDevice == null) {
+                    waltDevice.connect();
+                } else {
+                    waltDevice.connect(usbDevice);
+                }
+            }
+        }, 1000);
+
+        if (intent != null && AutoRunFragment.TEST_ACTION.equals(intent.getAction())) {
+            getSupportFragmentManager().popBackStack("Automated Test",
+                    FragmentManager.POP_BACK_STACK_INCLUSIVE);
+            Fragment autoRunFragment = new AutoRunFragment();
+            autoRunFragment.setArguments(intent.getExtras());
+            switchScreen(autoRunFragment, "Automated Test");
+        }
+    }
+
+    @Override
+    protected void onNewIntent(Intent intent) {
+        super.onNewIntent(intent);
+        setIntent(intent);
+    }
+
+    @Override
     protected void onCreate(Bundle savedInstanceState) {
         super.onCreate(savedInstanceState);
         Thread.setDefaultUncaughtExceptionHandler(new LoggingExceptionHandler());
@@ -86,20 +149,23 @@ public class MainActivity extends AppCompatActivity {
         // App bar
         toolbar = (Toolbar) findViewById(R.id.toolbar_main);
         setSupportActionBar(toolbar);
-
-        clockManager = new ClockManager(this, logger);
-
-        // Connect and sync clocks, but a bit later as it takes time
-        handler.post(new Runnable() {
+        getSupportFragmentManager().addOnBackStackChangedListener(new FragmentManager.OnBackStackChangedListener() {
             @Override
-            public void run() {
-                clockManager.connect();
-                // TODO: Do we need to sync here? Sync is done before each measurement.
-                // Ideally we need to sync here and check whether the process works ok
-                // on Nexus 9 it sometimes hangs for ~5 seconds.
-                clockManager.syncClock();
+            public void onBackStackChanged() {
+                int stackTopIndex = getSupportFragmentManager().getBackStackEntryCount() - 1;
+                if (stackTopIndex >= 0) {
+                    toolbar.setTitle(getSupportFragmentManager().getBackStackEntryAt(stackTopIndex).getName());
+                } else {
+                    toolbar.setTitle(R.string.app_name);
+                    getSupportActionBar().setDisplayHomeAsUpEnabled(false);
+                    // Disable fullscreen mode
+                    getSupportActionBar().show();
+                    getWindow().getDecorView().setSystemUiVisibility(0);
+                }
             }
         });
+
+        waltDevice = WaltDevice.getInstance(this);
 
         // Create front page fragment
         FrontPageFragment frontPageFragment = new FrontPageFragment();
@@ -107,24 +173,33 @@ public class MainActivity extends AppCompatActivity {
         transaction.add(R.id.fragment_container, frontPageFragment);
         transaction.commit();
 
+        logger = SimpleLogger.getInstance(this);
         broadcastManager = LocalBroadcastManager.getInstance(this);
-        logger.setBroadcastManager(broadcastManager);
 
-        // Add basic device info to the log
-        logger.log("DEVICE INFO");
-        logger.log("  os.version=" + System.getProperty("os.version"));
+        // Add basic version and device info to the log
+        logger.log(String.format("WALT v%s  (versionCode=%d)",
+                BuildConfig.VERSION_NAME, BuildConfig.VERSION_CODE));
+        logger.log("WALT protocol version " + WaltDevice.PROTOCOL_VERSION);
+        logger.log("DEVICE INFO:");
+        logger.log("  " + Build.FINGERPRINT);
         logger.log("  Build.SDK_INT=" + Build.VERSION.SDK_INT);
-        logger.log("  Build.DEVICE=" + Build.DEVICE);
+        logger.log("  os.version=" + System.getProperty("os.version"));
+
+        // Set volume buttons to control media volume
+        setVolumeControlStream(AudioManager.STREAM_MUSIC);
+        requestSystraceWritePermission();
+        // Allow network operations on the main thread
+        StrictMode.ThreadPolicy policy = new StrictMode.ThreadPolicy.Builder().permitAll().build();
+        StrictMode.setThreadPolicy(policy);
     }
 
     @Override
     public boolean onCreateOptionsMenu(Menu menu) {
         // Inflate the menu; this adds items to the action bar if it is present.
         getMenuInflater().inflate(R.menu.menu_main, menu);
-        mMenu = menu;
+        this.menu = menu;
         return true;
     }
-
 
     public void toast(String msg) {
         logger.log(msg);
@@ -135,9 +210,6 @@ public class MainActivity extends AppCompatActivity {
     public boolean onSupportNavigateUp() {
         // Go back when the back or up button on toolbar is clicked
         getSupportFragmentManager().popBackStack();
-        // Remove the back arrow from the toolbar because now we are at the top
-        getSupportActionBar().setDisplayHomeAsUpEnabled(false);
-        toolbar.setTitle(R.string.app_name);
         return true;
     }
 
@@ -147,17 +219,16 @@ public class MainActivity extends AppCompatActivity {
         // automatically handle clicks on the Home/Up button, so long
         // as you specify a parent activity in AndroidManifest.xml.
 
-        int id = item.getItemId();
         Log.i(TAG, "Toolbar button: " + item.getTitle());
 
         switch (item.getItemId()) {
             case R.id.action_help:
                 return true;
             case R.id.action_share:
-                String filepath = saveLogToFile();
-                shareLogFile(filepath);
+                attemptSaveAndShareLog();
                 return true;
             case R.id.action_upload:
+                showUploadLogDialog();
                 return true;
             default:
                 return super.onOptionsItemSelected(item);
@@ -173,7 +244,7 @@ public class MainActivity extends AppCompatActivity {
         toolbar.setTitle(title);
         FragmentTransaction transaction = getSupportFragmentManager().beginTransaction();
         transaction.replace(R.id.fragment_container, newFragment);
-        transaction.addToBackStack(null);
+        transaction.addToBackStack(title);
         transaction.commit();
     }
 
@@ -184,17 +255,28 @@ public class MainActivity extends AppCompatActivity {
 
     public void onClickTapLatency(View view) {
         TapLatencyFragment newFragment = new TapLatencyFragment();
+        requestSystraceWritePermission();
         switchScreen(newFragment, "Tap Latency");
     }
 
     public void onClickScreenResponse(View view) {
         ScreenResponseFragment newFragment = new ScreenResponseFragment();
+        requestSystraceWritePermission();
         switchScreen(newFragment, "Screen Response");
     }
 
     public void onClickAudio(View view) {
         AudioFragment newFragment = new AudioFragment();
-        switchScreen(newFragment, "Audio Output");
+        switchScreen(newFragment, "Audio Latency");
+    }
+
+    public void onClickMIDI(View view) {
+        if (MidiFragment.hasMidi(this)) {
+            MidiFragment newFragment = new MidiFragment();
+            switchScreen(newFragment, "MIDI Latency");
+        } else {
+            toast("This device does not support MIDI");
+        }
     }
 
     public void onClickDragLatency(View view) {
@@ -202,51 +284,129 @@ public class MainActivity extends AppCompatActivity {
         switchScreen(newFragment, "Drag Latency");
     }
 
+    public void onClickAccelerometer(View view) {
+        AccelerometerFragment newFragment = new AccelerometerFragment();
+        switchScreen(newFragment, "Accelerometer Latency");
+    }
+
     public void onClickOpenLog(View view) {
         LogFragment logFragment = new LogFragment();
-        // mMenu.findItem(R.id.action_help).setVisible(false);
+        // menu.findItem(R.id.action_help).setVisible(false);
         switchScreen(logFragment, "Log");
+    }
+
+    public void onClickOpenAbout(View view) {
+        AboutFragment aboutFragment = new AboutFragment();
+        switchScreen(aboutFragment, "About");
+    }
+
+    public void onClickOpenSettings(View view) {
+        SettingsFragment settingsFragment = new SettingsFragment();
+        switchScreen(settingsFragment, "Settings");
     }
 
     ////////////////////////////////////////////////////////////////////////////////////////////////
     // Handlers for diagnostics menu clicks
     ////////////////////////////////////////////////////////////////////////////////////////////////
     public void onClickReconnect(View view) {
-        clockManager.connect();
+        waltDevice.connect();
     }
 
     public void onClickPing(View view) {
-        // TODO: this prints "ping reply" even if there is no connection, do something about it
-        long t1 = clockManager.micros();
-        String s = clockManager.sendReceive('P');
-        long dt = clockManager.micros() - t1;
-        logger.log(String.format(
-                "Ping reply in %.1fms: \"%s\"", dt / 1000.,
-                s.trim()
-        ));
-    }
-
-    public void onClickSendT(View view) {
-        clockManager.sendByte('T');
+        long t1 = waltDevice.clock.micros();
+        try {
+            waltDevice.command(WaltDevice.CMD_PING);
+            long dt = waltDevice.clock.micros() - t1;
+            logger.log(String.format(Locale.US,
+                    "Ping reply in %.1fms", dt / 1000.
+            ));
+        } catch (IOException e) {
+            logger.log("Error sending ping: " + e.getMessage());
+        }
     }
 
     public void onClickStartListener(View view) {
-        if (clockManager.isListenerStopped()) {
-            clockManager.startUsbListener();
+        if (waltDevice.isListenerStopped()) {
+            try {
+                waltDevice.startListener();
+            } catch (IOException e) {
+                logger.log("Error starting USB listener: " + e.getMessage());
+            }
         } else {
-            clockManager.stopUsbListener();
+            waltDevice.stopListener();
         }
     }
 
     public void onClickSync(View view) {
-        clockManager.syncClock();
+        try {
+            waltDevice.syncClock();
+        } catch (IOException e) {
+            logger.log("Error syncing clocks: " + e.getMessage());
+        }
     }
 
     public void onClickCheckDrift(View view) {
-        clockManager.updateBounds();
-        int minE = clockManager.getMinE();
-        int maxE = clockManager.getMaxE();
-        logger.log(String.format("Remote clock delayed between %d and %d us", minE, maxE));
+        waltDevice.checkDrift();
+    }
+
+    public void onClickProgram(View view) {
+        if (waltDevice.isConnected()) {
+            // show dialog telling user to first press white button
+            final AlertDialog dialog = new AlertDialog.Builder(this)
+                .setTitle("Press white button")
+                .setMessage("Please press the white button on the WALT device.")
+                .setCancelable(false)
+                .setNegativeButton("Cancel", new DialogInterface.OnClickListener() {
+                    @Override
+                    public void onClick(DialogInterface dialog, int which) {}
+                }).show();
+
+            waltDevice.setConnectionStateListener(new WaltConnection.ConnectionStateListener() {
+                @Override
+                public void onConnect() {}
+
+                @Override
+                public void onDisconnect() {
+                    dialog.cancel();
+                    handler.postDelayed(new Runnable() {
+                        @Override
+                        public void run() {
+                            new Programmer(MainActivity.this).program();
+                        }
+                    }, 1000);
+                }
+            });
+        } else {
+            new Programmer(this).program();
+        }
+    }
+
+    private void attemptSaveAndShareLog() {
+        int currentPermission = ContextCompat.checkSelfPermission(this,
+                Manifest.permission.WRITE_EXTERNAL_STORAGE);
+        if (currentPermission == PackageManager.PERMISSION_GRANTED) {
+            String filePath = saveLogToFile();
+            shareLogFile(filePath);
+        } else {
+            ActivityCompat.requestPermissions(this,
+                    new String[]{Manifest.permission.WRITE_EXTERNAL_STORAGE},
+                    PERMISSION_REQUEST_WRITE_EXTERNAL_STORAGE_SHARE_LOG);
+        }
+    }
+
+    @Override
+    public void onRequestPermissionsResult(int requestCode, @NonNull String[] permissions, @NonNull int[] grantResults) {
+        super.onRequestPermissionsResult(requestCode, permissions, grantResults);
+        final boolean isPermissionGranted = grantResults.length > 0 && grantResults[0] == PackageManager.PERMISSION_GRANTED;
+        if (!isPermissionGranted) {
+            logger.log("Could not get permission to write file to storage");
+            return;
+        }
+        switch (requestCode) {
+            case PERMISSION_REQUEST_WRITE_EXTERNAL_STORAGE_SHARE_LOG:
+                attemptSaveAndShareLog();
+                break;
+        }
     }
 
     public String saveLogToFile() {
@@ -302,7 +462,79 @@ public class MainActivity extends AppCompatActivity {
         try {
             startActivity(Intent.createChooser(i, "Send mail..."));
         } catch (android.content.ActivityNotFoundException ex) {
-            Toast.makeText(MainActivity.this, "There are no email clients installed.", Toast.LENGTH_SHORT).show();
+            toast("There are no email clients installed.");
+        }
+    }
+
+    private static boolean startsWithHttp(String url) {
+        return url.toLowerCase().startsWith("http://") || url.toLowerCase().startsWith("https://");
+    }
+
+    private void showUploadLogDialog() {
+        final AlertDialog dialog = new AlertDialog.Builder(this)
+                .setTitle("Upload log to URL")
+                .setView(R.layout.dialog_upload)
+                .setPositiveButton("Upload", new DialogInterface.OnClickListener() {
+                    @Override
+                    public void onClick(DialogInterface dialog, int which) {}
+                })
+                .setNegativeButton("Cancel", new DialogInterface.OnClickListener() {
+                    @Override
+                    public void onClick(DialogInterface dialog, int which) {}
+                })
+                .show();
+        final EditText editText = (EditText) dialog.findViewById(R.id.edit_text);
+        editText.setText(Utils.getStringPreference(
+                MainActivity.this, R.string.preference_log_url, ""));
+        dialog.getButton(AlertDialog.BUTTON_POSITIVE).
+                setOnClickListener(new View.OnClickListener() {
+            @Override
+            public void onClick(View v) {
+                View progress = dialog.findViewById(R.id.progress_bar);
+                String urlString = editText.getText().toString();
+                if (!startsWithHttp(urlString)) {
+                    urlString = "http://" + urlString;
+                }
+                editText.setVisibility(View.GONE);
+                progress.setVisibility(View.VISIBLE);
+                LogUploader uploader = new LogUploader(MainActivity.this, urlString);
+                final String finalUrlString = urlString;
+                uploader.registerListener(1, new Loader.OnLoadCompleteListener<Integer>() {
+                    @Override
+                    public void onLoadComplete(Loader<Integer> loader, Integer data) {
+                        dialog.cancel();
+                        if (data == -1) {
+                            Toast.makeText(MainActivity.this,
+                                    "Failed to upload log", Toast.LENGTH_SHORT).show();
+                            return;
+                        } else if (data / 100 == 2) {
+                            Toast.makeText(MainActivity.this,
+                                    "Log successfully uploaded", Toast.LENGTH_SHORT).show();
+                        } else {
+                            Toast.makeText(MainActivity.this,
+                                    "Failed to upload log. Server returned status code " + data,
+                                    Toast.LENGTH_SHORT).show();
+                        }
+                        SharedPreferences preferences = PreferenceManager
+                                .getDefaultSharedPreferences(MainActivity.this);
+                        preferences.edit().putString(
+                                getString(R.string.preference_log_url), finalUrlString).apply();
+                    }
+                });
+                uploader.startUpload();
+            }
+        });
+    }
+
+    private void requestSystraceWritePermission() {
+        if (getBooleanPreference(this, R.string.preference_systrace, true)) {
+            int currentPermission = ContextCompat.checkSelfPermission(this,
+                    Manifest.permission.WRITE_EXTERNAL_STORAGE);
+            if (currentPermission != PackageManager.PERMISSION_GRANTED) {
+                ActivityCompat.requestPermissions(this,
+                        new String[]{Manifest.permission.WRITE_EXTERNAL_STORAGE},
+                        PERMISSION_REQUEST_WRITE_EXTERNAL_STORAGE_SYSTRACE);
+            }
         }
     }
 

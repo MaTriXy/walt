@@ -20,7 +20,6 @@ package org.chromium.latency.walt;
 import android.content.BroadcastReceiver;
 import android.content.Context;
 import android.content.Intent;
-import android.content.IntentFilter;
 import android.os.Bundle;
 import android.support.v4.app.Fragment;
 import android.text.method.ScrollingMovementMethod;
@@ -35,11 +34,11 @@ import android.widget.TextView;
  */
 public class DiagnosticsFragment extends Fragment {
 
-    MainActivity activity;
-    TextView mTextView;
+    private SimpleLogger logger;
+    private TextView logTextView;
 
 
-    private BroadcastReceiver mLogReceiver = new BroadcastReceiver() {
+    private BroadcastReceiver logReceiver = new BroadcastReceiver() {
         @Override
         public void onReceive(Context context, Intent intent) {
             String msg = intent.getStringExtra("message");
@@ -55,32 +54,29 @@ public class DiagnosticsFragment extends Fragment {
     @Override
     public View onCreateView(LayoutInflater inflater, ViewGroup container,
                              Bundle savedInstanceState) {
+        logger = SimpleLogger.getInstance(getContext());
         // Inflate the layout for this fragment
-        return inflater.inflate(R.layout.fragment_diagnostics, container, false);
+        final View view = inflater.inflate(R.layout.fragment_diagnostics, container, false);
+        logTextView = (TextView) view.findViewById(R.id.txt_log_diag);
+        return view;
     }
 
     @Override
     public void onResume() {
         super.onResume();
-        activity = (MainActivity) getActivity();
-
-        mTextView = (TextView) activity.findViewById(R.id.txt_log_diag);
-        mTextView.setMovementMethod(new ScrollingMovementMethod());
-        mTextView.setText(activity.logger.getLogText());
-
-        activity.logger.broadcastManager.registerReceiver(mLogReceiver,
-                new IntentFilter(activity.logger.LOG_INTENT));
-
+        logTextView.setMovementMethod(new ScrollingMovementMethod());
+        logTextView.setText(logger.getLogText());
+        logger.registerReceiver(logReceiver);
     }
 
     @Override
     public void onPause() {
-        activity.logger.broadcastManager.unregisterReceiver(mLogReceiver);
+        logger.unregisterReceiver(logReceiver);
         super.onPause();
     }
 
 
     public void appendLogText(String msg) {
-        mTextView.append(msg + "\n");
+        logTextView.append(msg + "\n");
     }
 }
